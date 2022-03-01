@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"sync"
@@ -79,15 +78,18 @@ func (s *Session) connect() {
 	}
 	s.Host.SetStreamHandler(stream.Protocol(), s.onStream)
 
-	go s.readLoop(sessionCtx)
+	go s.onStream(s.conn)
 	s.ready <- struct{}{}
 }
 
 func (s *Session) onStream(stream network.Stream) {
 	buf := make([]byte, 4*1024*1024)
+	pos := uint64(0)
+	prefixLen := 0
+	msgLen := uint64(0)
 	for {
-		//s.conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-		n, err := stream.Read(buf)
+		readLen, err := stream.Read(buf[pos:])
+
 		if err != nil {
 			if os.IsTimeout(err) {
 				continue
@@ -100,36 +102,27 @@ func (s *Session) onStream(stream network.Stream) {
 			s.Close()
 			return
 		}
-		if n > 0 {
-			s.handle(buf[:n])
-		}
-	}
-}
-
-// readLoop is the event loop handling inbound messages associated with this session.
-func (s *Session) readLoop(ctx context.Context) {
-	var buf []byte
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		buf = make([]byte, 4*1024*1024)
-		//s.conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-		n, err := s.conn.Read(buf)
-		if err != nil {
-			if os.IsTimeout(err) {
-				continue
+		if msgLen == 0 {
+			nextLen, intLen := binary.Uvarint(buf)
+			if intLen <= 0 {
+				s.connErr = errors.New("invalid message")
+				s.Close()
+				return
 			}
-			//otherwise assume real error / conn closed.
-			s.connErr = err
-			s.Close()
-			return
+			if nextLen > uint64(len(buf)) {
+				nb := make([]byte, uint64(intLen)+nextLen)
+				copy(nb, buf[:])
+				buf = nb
+			}
+			msgLen = nextLen
+			pos = uint64(readLen)
+			prefixLen = intLen
+		} else {
+			pos += uint64(readLen)
 		}
-		if n > 0 {
-			s.handle(buf[:n])
+
+		if pos == msgLen {
+			s.handle(buf[prefixLen : uint64(prefixLen)+msgLen])
 		}
 	}
 }
@@ -190,13 +183,8 @@ func (s *Session) send(cids []cid.Cid) error {
 
 // Handle an inbound message.
 func (s *Session) handle(buf []byte) {
-	ml, n := binary.Uvarint(buf)
-	if len(buf) < n+int(ml) {
-		fmt.Printf("partial read..\n")
-		return
-	}
 	m := bitswap_message_pb.Message{}
-	if err := m.Unmarshal(buf[n:]); err != nil {
+	if err := m.Unmarshal(buf); err != nil {
 		//todo: log
 	}
 	// bitswap 1.1
