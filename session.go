@@ -3,20 +3,21 @@ package bitswap
 import (
 	"context"
 	"encoding/binary"
-	"errors"
 	"io"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/ipfs/go-cid"
-	"github.com/libp2p/go-libp2p-core/host"
-	"github.com/libp2p/go-libp2p-core/network"
-	"github.com/libp2p/go-libp2p-core/peer"
-	"github.com/libp2p/go-libp2p-core/protocol"
-	"github.com/multiformats/go-multihash"
+	pool "github.com/libp2p/go-buffer-pool"
+	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
+	"github.com/libp2p/go-msgio"
 
-	bitswap_message_pb "github.com/willscott/go-selfish-bitswap-client/message"
+	"github.com/ipfs/go-bitswap/message"
+	pb "github.com/ipfs/go-bitswap/message/pb"
 )
 
 // Session holds state for a related set of CID requests from a single remote peer
@@ -83,46 +84,24 @@ func (s *Session) connect() {
 }
 
 func (s *Session) onStream(stream network.Stream) {
-	buf := make([]byte, 4*1024*1024)
-	pos := uint64(0)
-	prefixLen := 0
-	msgLen := uint64(0)
-	for {
-		readLen, err := stream.Read(buf[pos:])
+	reader := msgio.NewVarintReaderSize(stream, network.MessageSizeMax)
 
+	for {
+		received, err := message.FromMsgReader(reader)
 		if err != nil {
 			if os.IsTimeout(err) {
 				continue
 			}
-			if errors.As(err, &io.EOF) {
+			if err == io.EOF {
 				return
 			}
-			//otherwise assume real error / conn closed.
 			s.connErr = err
 			s.Close()
 			return
 		}
-		if msgLen == 0 {
-			nextLen, intLen := binary.Uvarint(buf)
-			if intLen <= 0 {
-				s.connErr = errors.New("invalid message")
-				s.Close()
-				return
-			}
-			if nextLen > uint64(len(buf)) {
-				nb := make([]byte, uint64(intLen)+nextLen)
-				copy(nb, buf[:])
-				buf = nb
-			}
-			msgLen = nextLen
-			pos = uint64(readLen)
-			prefixLen = intLen
-		} else {
-			pos += uint64(readLen)
-		}
 
-		if pos == msgLen {
-			s.handle(buf[prefixLen : uint64(prefixLen)+msgLen])
+		for _, b := range received.Blocks() {
+			s.resolve(b.Cid(), b.RawData(), err)
 		}
 	}
 }
@@ -159,59 +138,28 @@ func (s *Session) writeLoop(ctx context.Context) {
 }
 
 func (s *Session) send(cids []cid.Cid) error {
-	m := bitswap_message_pb.Message{}
-	m.Wantlist = bitswap_message_pb.Message_Wantlist{}
+
+	msg := message.New(false)
 	for _, c := range cids {
-		bc := bitswap_message_pb.Cid{Cid: c}
-		m.Wantlist.Entries = append(m.Wantlist.Entries, bitswap_message_pb.Message_Wantlist_Entry{Block: bc})
+		msg.AddEntry(c, 0, pb.Message_Wantlist_Block, false)
 	}
 
-	bytes, err := m.Marshal()
+	m := msg.ToProtoV1()
+	size := m.Size()
+
+	buf := pool.Get(size + binary.MaxVarintLen64)
+	defer pool.Put(buf)
+
+	n := binary.PutUvarint(buf, uint64(size))
+
+	written, err := m.MarshalTo(buf[n:])
 	if err != nil {
 		return err
 	}
+	n += written
 
-	ln := binary.PutUvarint(s.lbuf, uint64(len(bytes)))
-	if _, err := s.conn.Write(s.lbuf[0:ln]); err != nil {
-		return err
-	}
-	if _, err := s.conn.Write(bytes); err != nil {
-		return err
-	}
-	return nil
-}
-
-// Handle an inbound message.
-func (s *Session) handle(buf []byte) {
-	m := bitswap_message_pb.Message{}
-	if err := m.Unmarshal(buf); err != nil {
-		//todo: log
-	}
-	// bitswap 1.1
-	for _, bp := range m.Payload {
-		prefix, err := cid.PrefixFromBytes(bp.Prefix)
-		if err != nil {
-			// todo: log
-			continue
-		}
-		c, err := prefix.Sum(bp.GetData())
-		if err != nil {
-			// todo: log
-			continue
-		}
-		s.resolve(c, bp.GetData(), nil)
-	}
-	// bitswap 1.0
-	for _, b := range m.Blocks {
-		// CIDv0, sha256, protobuf only
-		mh, err := multihash.Sum(b, multihash.SHA2_256, -1)
-		if err != nil {
-			// todo: log
-			continue
-		}
-		c := cid.NewCidV0(mh)
-		s.resolve(c, b, nil)
-	}
+	_, err = s.conn.Write(buf[:n])
+	return err
 }
 
 // Close stops the session.
