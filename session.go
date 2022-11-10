@@ -173,6 +173,8 @@ func (s *Session) Close() error {
 		for _, i := range s.interests {
 			i(nil, s.connErr)
 		}
+		// delete all interests
+		s.interests = make(map[cid.Cid]func([]byte, error))
 	}
 	return nil
 }
