@@ -94,7 +94,7 @@ func (s *Session) onStream(stream network.Stream) {
 			if os.IsTimeout(err) {
 				continue
 			}
-			if errors.As(err, &io.EOF) {
+			if errors.Is(err, io.EOF) {
 				return
 			}
 			//otherwise assume real error / conn closed.
