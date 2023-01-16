@@ -8,7 +8,7 @@ import (
 
 	"github.com/ipfs/go-cid"
 	"github.com/libp2p/go-libp2p"
-	"github.com/libp2p/go-libp2p-core/peer"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
 	"github.com/urfave/cli/v2"
 	bitswap "github.com/willscott/go-selfish-bitswap-client"
@@ -64,6 +64,7 @@ func Get(c *cli.Context) error {
 	host.Peerstore().AddAddr(ai.ID, ai.Addrs[0], time.Hour)
 
 	s := bitswap.New(host, ai.ID)
+	fmt.Printf("starting get...\n")
 	bytes, err := s.Get(cidParsed)
 
 	if err != nil {
