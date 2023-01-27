@@ -37,10 +37,24 @@ type Session struct {
 
 	interestMtx sync.Mutex
 	interests   map[cid.Cid]func([]byte, error)
+	stimeout    time.Duration
+	ttimeout    time.Duration
+}
+
+type Options struct {
+	SessionTimeout time.Duration
+	TickerTimeout  time.Duration
 }
 
 // New initiates a bitswap retrieval session
-func New(h host.Host, peer peer.ID) *Session {
+func New(h host.Host, peer peer.ID, opts Options) *Session {
+	if opts.SessionTimeout == 0 {
+		opts.SessionTimeout = 10 * time.Second
+	}
+
+	if opts.TickerTimeout == 0 {
+		opts.TickerTimeout = 50 * time.Millisecond
+	}
 	return &Session{
 		Host:      h,
 		peer:      peer,
@@ -48,6 +62,8 @@ func New(h host.Host, peer peer.ID) *Session {
 		wants:     make(chan cid.Cid, 5),
 		lbuf:      make([]byte, binary.MaxVarintLen64),
 		interests: make(map[cid.Cid]func([]byte, error)),
+		stimeout:  opts.SessionTimeout,
+		ttimeout:  opts.TickerTimeout,
 	}
 }
 
@@ -62,15 +78,11 @@ var (
 	ProtocolBitswap protocol.ID = "/ipfs/bitswap/1.2.0"
 )
 
-func (s *Session) Connect(timeout time.Duration) {
+func (s *Session) connect() {
 	sessionCtx, cncl := context.WithCancel(context.Background())
 	s.close = cncl
 	go s.writeLoop(sessionCtx)
-
-	if timeout == 0 {
-		timeout = 10 * time.Second
-	}
-	ctx, cncl := context.WithDeadline(context.Background(), time.Now().Add(timeout))
+	ctx, cncl := context.WithDeadline(context.Background(), time.Now().Add(s.stimeout))
 	defer cncl()
 	stream, err := s.Host.NewStream(ctx, s.peer, ProtocolBitswap, ProtocolBitswapOneZero, ProtocolBitswapOneOne, ProtocolBitswapNoVers)
 	s.connErr = err
@@ -130,9 +142,11 @@ func (s *Session) onStream(stream network.Stream) {
 }
 
 // writeLoop is the event loop handling outbound messages
+// TODO just cancel ctx - not timeout
 func (s *Session) writeLoop(ctx context.Context) {
 	cids := make([]cid.Cid, 0)
-	timeout := time.NewTicker(time.Millisecond * 50)
+	// TODO Ticker just flushes the cids every x duration
+	timeout := time.NewTicker(s.ttimeout)
 	ready := false
 	defer close(s.ready)
 	defer timeout.Stop()
@@ -252,6 +266,7 @@ func (s *Session) resolve(c cid.Cid, data []byte, err error) {
 // Get a specific block of data in this session.
 func (s *Session) Get(c cid.Cid) ([]byte, error) {
 	// confirm connected.
+	// TODO initiation only called once.
 	s.initated.Do(s.connect)
 	if s.connErr != nil {
 		return nil, s.connErr
