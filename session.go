@@ -62,13 +62,15 @@ var (
 	ProtocolBitswap protocol.ID = "/ipfs/bitswap/1.2.0"
 )
 
-func (s *Session) connect() {
+func (s *Session) Connect(timeout time.Duration) {
 	sessionCtx, cncl := context.WithCancel(context.Background())
 	s.close = cncl
 	go s.writeLoop(sessionCtx)
 
-	// todo: configuratble timeout
-	ctx, cncl := context.WithDeadline(context.Background(), time.Now().Add(10*time.Second))
+	if timeout == 0 {
+		timeout = 10 * time.Second
+	}
+	ctx, cncl := context.WithDeadline(context.Background(), time.Now().Add(timeout))
 	defer cncl()
 	stream, err := s.Host.NewStream(ctx, s.peer, ProtocolBitswap, ProtocolBitswapOneZero, ProtocolBitswapOneOne, ProtocolBitswapNoVers)
 	s.connErr = err
