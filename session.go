@@ -47,18 +47,18 @@ type Session struct {
 }
 
 type Options struct {
-	SessionTimeout time.Duration
-	TickerTimeout  time.Duration
+	SessionTimeout          time.Duration
+	WriteAggregationQuantum time.Duration
 }
+
+const (
+	defaultWriteAggregationQuantum = 50 * time.Millisecond
+)
 
 // New initiates a bitswap retrieval session
 func New(h host.Host, peer peer.ID, opts Options) *Session {
-	if opts.SessionTimeout == 0 {
-		opts.SessionTimeout = 10 * time.Second
-	}
-
-	if opts.TickerTimeout == 0 {
-		opts.TickerTimeout = 50 * time.Millisecond
+	if opts.WriteAggregationQuantum == 0 {
+		opts.WriteAggregationQuantum = defaultWriteAggregationQuantum
 	}
 	return &Session{
 		Host:      h,
@@ -68,7 +68,7 @@ func New(h host.Host, peer peer.ID, opts Options) *Session {
 		lbuf:      make([]byte, binary.MaxVarintLen64),
 		interests: make(map[cid.Cid]func([]byte, error)),
 		stimeout:  opts.SessionTimeout,
-		ttimeout:  opts.TickerTimeout,
+		ttimeout:  opts.WriteAggregationQuantum,
 	}
 }
 
@@ -87,8 +87,11 @@ func (s *Session) connect() {
 	sessionCtx, cncl := context.WithCancel(context.Background())
 	s.close = cncl
 	go s.writeLoop(sessionCtx)
-	ctx, cncl := context.WithDeadline(context.Background(), time.Now().Add(s.stimeout))
-	defer cncl()
+	ctx := context.Background()
+	if s.stimeout != 0 {
+		ctx, cncl = context.WithDeadline(context.Background(), time.Now().Add(s.stimeout))
+		defer cncl()
+	}
 	stream, err := s.Host.NewStream(ctx, s.peer, ProtocolBitswap, ProtocolBitswapOneZero, ProtocolBitswapOneOne, ProtocolBitswapNoVers)
 	s.connErr = err
 	s.conn = stream
