@@ -143,7 +143,7 @@ func (s *Session) onStream(stream network.Stream) {
 }
 
 // writeLoop is the event loop handling outbound messages
-// TODO just cancel ctx - not timeout
+// TODO just cancel ctx - not timeout, returns no error
 func (s *Session) writeLoop(ctx context.Context) {
 	cids := make([]cid.Cid, 0)
 	// TODO Ticker just flushes the cids every x duration
@@ -265,9 +265,9 @@ func (s *Session) resolve(c cid.Cid, data []byte, err error) {
 }
 
 // Get a specific block of data in this session.
-func (s *Session) Get(c cid.Cid) ([]byte, error) {
+// ctx is used to configure timeout logic across the entire session.
+func (s *Session) Get(ctx context.Context, c cid.Cid) ([]byte, error) {
 	// confirm connected.
-	// TODO initiation only called once.
 	s.initated.Do(s.connect)
 	if s.connErr != nil {
 		return nil, s.connErr
@@ -287,5 +287,10 @@ func (s *Session) Get(c cid.Cid) ([]byte, error) {
 	})
 	wg.Wait()
 
-	return data, err
+	select {
+	case <-ctx.Done():
+		return data, ctx.Err()
+	default:
+		return data, err
+	}
 }
