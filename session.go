@@ -20,7 +20,7 @@ import (
 )
 
 type Bitswap interface {
-	Get(c cid.Cid) ([]byte, error)
+	Get(ctx context.Context, c cid.Cid) ([]byte, error)
 	Close() error
 }
 
