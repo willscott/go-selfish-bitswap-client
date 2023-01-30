@@ -82,6 +82,7 @@ func (s *Session) connect() {
 	sessionCtx, cncl := context.WithCancel(context.Background())
 	s.close = cncl
 	go s.writeLoop(sessionCtx)
+	// TODO does this session timeout from this context?
 	ctx, cncl := context.WithDeadline(context.Background(), time.Now().Add(s.stimeout))
 	defer cncl()
 	stream, err := s.Host.NewStream(ctx, s.peer, ProtocolBitswap, ProtocolBitswapOneZero, ProtocolBitswapOneOne, ProtocolBitswapNoVers)
