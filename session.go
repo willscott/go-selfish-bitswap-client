@@ -19,6 +19,11 @@ import (
 	bitswap_message_pb "github.com/willscott/go-selfish-bitswap-client/message"
 )
 
+type Bitswap interface {
+	Get(c cid.Cid) ([]byte, error)
+	Close() error
+}
+
 // Session holds state for a related set of CID requests from a single remote peer
 type Session struct {
 	host.Host
@@ -82,7 +87,6 @@ func (s *Session) connect() {
 	sessionCtx, cncl := context.WithCancel(context.Background())
 	s.close = cncl
 	go s.writeLoop(sessionCtx)
-	// TODO does the entire session timeout from this context?
 	ctx, cncl := context.WithDeadline(context.Background(), time.Now().Add(s.stimeout))
 	defer cncl()
 	stream, err := s.Host.NewStream(ctx, s.peer, ProtocolBitswap, ProtocolBitswapOneZero, ProtocolBitswapOneOne, ProtocolBitswapNoVers)
@@ -143,10 +147,8 @@ func (s *Session) onStream(stream network.Stream) {
 }
 
 // writeLoop is the event loop handling outbound messages
-// TODO just cancel ctx - not timeout, returns no error
 func (s *Session) writeLoop(ctx context.Context) {
 	cids := make([]cid.Cid, 0)
-	// TODO Ticker just flushes the cids every x duration
 	timeout := time.NewTicker(s.ttimeout)
 	ready := false
 	defer close(s.ready)
@@ -265,7 +267,7 @@ func (s *Session) resolve(c cid.Cid, data []byte, err error) {
 }
 
 // Get a specific block of data in this session.
-// ctx is used to configure timeout logic across the entire session.
+// ctx is used to wrap client in timeout logic across a session.
 func (s *Session) Get(ctx context.Context, c cid.Cid) ([]byte, error) {
 	// confirm connected.
 	s.initated.Do(s.connect)
