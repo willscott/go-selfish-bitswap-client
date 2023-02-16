@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"io"
+	"fmt"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/ipfs/go-cid"
+	"github.com/ipfs/go-log/v2"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -41,7 +42,7 @@ type Session struct {
 	lbuf  []byte
 
 	interestMtx sync.Mutex
-	interests   map[cid.Cid]func([]byte, error)
+	interests   map[string]func([]byte, error)
 	stimeout    time.Duration
 	ttimeout    time.Duration
 }
@@ -66,7 +67,7 @@ func New(h host.Host, peer peer.ID, opts Options) *Session {
 		ready:     make(chan struct{}),
 		wants:     make(chan cid.Cid, 5),
 		lbuf:      make([]byte, binary.MaxVarintLen64),
-		interests: make(map[cid.Cid]func([]byte, error)),
+		interests: make(map[string]func([]byte, error)),
 		stimeout:  opts.SessionTimeout,
 		ttimeout:  opts.WriteAggregationQuantum,
 	}
@@ -81,6 +82,13 @@ var (
 	ProtocolBitswapOneOne protocol.ID = "/ipfs/bitswap/1.1.0"
 	// ProtocolBitswap is the current version of the bitswap protocol: 1.2.0
 	ProtocolBitswap protocol.ID = "/ipfs/bitswap/1.2.0"
+
+	logger = log.Logger("bitswap-client")
+)
+
+const (
+	// maximum block we'll read is 4mb
+	MaxBlockSize = 1024 * 1024 * 4
 )
 
 func (s *Session) connect() {
@@ -96,6 +104,7 @@ func (s *Session) connect() {
 	s.connErr = err
 	s.conn = stream
 	if s.connErr != nil {
+		logger.Warnw("could not connect", "peer", s.peer, "err", s.connErr)
 		return
 	}
 	s.Host.SetStreamHandler(stream.Protocol(), s.onStream)
@@ -105,6 +114,7 @@ func (s *Session) connect() {
 }
 
 func (s *Session) onStream(stream network.Stream) {
+	defer stream.Close()
 	buf := make([]byte, 4*1024*1024)
 	pos := uint64(0)
 	prefixLen := 0
@@ -116,10 +126,6 @@ func (s *Session) onStream(stream network.Stream) {
 			if os.IsTimeout(err) {
 				continue
 			}
-			if errors.Is(err, io.EOF) {
-				return
-			}
-			//otherwise assume real error / conn closed.
 			s.connErr = err
 			s.Close()
 			return
@@ -131,12 +137,17 @@ func (s *Session) onStream(stream network.Stream) {
 				s.Close()
 				return
 			}
+			if nextLen > MaxBlockSize {
+				s.connErr = errors.New("too large message")
+				s.Close()
+				return
+			}
 			if nextLen > uint64(len(buf)) {
 				nb := make([]byte, uint64(intLen)+nextLen)
 				copy(nb, buf[:])
 				buf = nb
 			}
-			msgLen = nextLen
+			msgLen = nextLen + uint64(intLen)
 			pos = uint64(readLen)
 			prefixLen = intLen
 		} else {
@@ -144,7 +155,14 @@ func (s *Session) onStream(stream network.Stream) {
 		}
 
 		if pos == msgLen {
-			s.handle(buf[prefixLen : uint64(prefixLen)+msgLen])
+			if err := s.handle(buf[prefixLen:msgLen]); err != nil {
+				s.connErr = fmt.Errorf("invalid block read: %w", err)
+				s.Close()
+				return
+			}
+			pos = 0
+			prefixLen = 0
+			msgLen = 0
 		}
 	}
 }
@@ -204,36 +222,48 @@ func (s *Session) send(cids []cid.Cid) error {
 }
 
 // Handle an inbound message.
-func (s *Session) handle(buf []byte) {
+func (s *Session) handle(buf []byte) error {
 	m := bitswap_message_pb.Message{}
 	if err := m.Unmarshal(buf); err != nil {
-		//todo: log
+		logger.Warnw("failed to parse message as bitswap", "err", err)
+		return err
 	}
+	foundBlocks := 0
 	// bitswap 1.1
 	for _, bp := range m.Payload {
 		prefix, err := cid.PrefixFromBytes(bp.Prefix)
 		if err != nil {
-			// todo: log
+			logger.Warnw("failed to parse payload cid", "err", err)
 			continue
 		}
 		c, err := prefix.Sum(bp.GetData())
 		if err != nil {
-			// todo: log
+			logger.Warnw("failed to hash payload", "err", err)
 			continue
 		}
-		s.resolve(c, bp.GetData(), nil)
+		if err := s.resolve(c, bp.GetData(), nil); err != nil {
+			continue
+		}
+		foundBlocks++
 	}
 	// bitswap 1.0
 	for _, b := range m.Blocks {
 		// CIDv0, sha256, protobuf only
 		mh, err := multihash.Sum(b, multihash.SHA2_256, -1)
 		if err != nil {
-			// todo: log
+			logger.Warnw("failed to hash block", "err", err)
 			continue
 		}
 		c := cid.NewCidV0(mh)
-		s.resolve(c, b, nil)
+		if err := s.resolve(c, b, nil); err != nil {
+			continue
+		}
+		foundBlocks++
 	}
+	if foundBlocks == 0 {
+		return errors.New("no requested block read")
+	}
+	return nil
 }
 
 // Close stops the session.
@@ -255,17 +285,26 @@ func (s *Session) on(c cid.Cid, cb func([]byte, error)) {
 	s.interestMtx.Lock()
 	defer s.interestMtx.Unlock()
 	// todo: support multiple
-	s.interests[c] = cb
+	mh := c.Hash().HexString()
+	s.interests[mh] = cb
 }
 
-func (s *Session) resolve(c cid.Cid, data []byte, err error) {
+func (s *Session) resolve(c cid.Cid, data []byte, err error) error {
 	s.interestMtx.Lock()
-	defer s.interestMtx.Unlock()
 
-	cb, ok := s.interests[c]
+	mh := c.Hash().HexString()
+	cb, ok := s.interests[mh]
 	if ok {
-		delete(s.interests, c)
+		delete(s.interests, mh)
+	}
+
+	s.interestMtx.Unlock()
+
+	if ok {
 		cb(data, err)
+		return nil
+	} else {
+		return fmt.Errorf("could not resolve block: no callback registered for %s", c)
 	}
 }
 
