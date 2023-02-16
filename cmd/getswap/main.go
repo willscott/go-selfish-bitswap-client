@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -63,9 +64,9 @@ func Get(c *cli.Context) error {
 	}
 	host.Peerstore().AddAddr(ai.ID, ai.Addrs[0], time.Hour)
 
-	s := bitswap.New(host, ai.ID)
+	s := bitswap.New(host, ai.ID, bitswap.Options{})
 	fmt.Printf("starting get...\n")
-	bytes, err := s.Get(cidParsed)
+	bytes, err := s.Get(context.Background(), cidParsed)
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s", err)

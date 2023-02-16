@@ -20,6 +20,11 @@ import (
 	bitswap_message_pb "github.com/willscott/go-selfish-bitswap-client/message"
 )
 
+type Bitswap interface {
+	Get(ctx context.Context, c cid.Cid) ([]byte, error)
+	Close() error
+}
+
 // Session holds state for a related set of CID requests from a single remote peer
 type Session struct {
 	host.Host
@@ -38,10 +43,24 @@ type Session struct {
 
 	interestMtx sync.Mutex
 	interests   map[string]func([]byte, error)
+	stimeout    time.Duration
+	ttimeout    time.Duration
 }
 
+type Options struct {
+	SessionTimeout          time.Duration
+	WriteAggregationQuantum time.Duration
+}
+
+const (
+	defaultWriteAggregationQuantum = 50 * time.Millisecond
+)
+
 // New initiates a bitswap retrieval session
-func New(h host.Host, peer peer.ID) *Session {
+func New(h host.Host, peer peer.ID, opts Options) *Session {
+	if opts.WriteAggregationQuantum == 0 {
+		opts.WriteAggregationQuantum = defaultWriteAggregationQuantum
+	}
 	return &Session{
 		Host:      h,
 		peer:      peer,
@@ -49,6 +68,8 @@ func New(h host.Host, peer peer.ID) *Session {
 		wants:     make(chan cid.Cid, 5),
 		lbuf:      make([]byte, binary.MaxVarintLen64),
 		interests: make(map[string]func([]byte, error)),
+		stimeout:  opts.SessionTimeout,
+		ttimeout:  opts.WriteAggregationQuantum,
 	}
 }
 
@@ -74,10 +95,11 @@ func (s *Session) connect() {
 	sessionCtx, cncl := context.WithCancel(context.Background())
 	s.close = cncl
 	go s.writeLoop(sessionCtx)
-
-	// todo: configuratble timeout
-	ctx, cncl := context.WithDeadline(context.Background(), time.Now().Add(10*time.Second))
-	defer cncl()
+	ctx := context.Background()
+	if s.stimeout != 0 {
+		ctx, cncl = context.WithDeadline(context.Background(), time.Now().Add(s.stimeout))
+		defer cncl()
+	}
 	stream, err := s.Host.NewStream(ctx, s.peer, ProtocolBitswap, ProtocolBitswapOneZero, ProtocolBitswapOneOne, ProtocolBitswapNoVers)
 	s.connErr = err
 	s.conn = stream
@@ -148,7 +170,7 @@ func (s *Session) onStream(stream network.Stream) {
 // writeLoop is the event loop handling outbound messages
 func (s *Session) writeLoop(ctx context.Context) {
 	cids := make([]cid.Cid, 0)
-	timeout := time.NewTicker(time.Millisecond * 50)
+	timeout := time.NewTicker(s.ttimeout)
 	ready := false
 	defer close(s.ready)
 	defer timeout.Stop()
@@ -287,7 +309,8 @@ func (s *Session) resolve(c cid.Cid, data []byte, err error) error {
 }
 
 // Get a specific block of data in this session.
-func (s *Session) Get(c cid.Cid) ([]byte, error) {
+// ctx is used to wrap client in timeout logic across a session.
+func (s *Session) Get(ctx context.Context, c cid.Cid) ([]byte, error) {
 	// confirm connected.
 	s.initated.Do(s.connect)
 	if s.connErr != nil {
@@ -308,5 +331,10 @@ func (s *Session) Get(c cid.Cid) ([]byte, error) {
 	})
 	wg.Wait()
 
-	return data, err
+	select {
+	case <-ctx.Done():
+		return data, ctx.Err()
+	default:
+		return data, err
+	}
 }
