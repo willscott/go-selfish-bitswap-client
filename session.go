@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"sync"
 	"time"
@@ -93,6 +92,7 @@ func (s *Session) connect() {
 }
 
 func (s *Session) onStream(stream network.Stream) {
+	defer stream.Close()
 	buf := make([]byte, 4*1024*1024)
 	pos := uint64(0)
 	prefixLen := 0
@@ -104,10 +104,6 @@ func (s *Session) onStream(stream network.Stream) {
 			if os.IsTimeout(err) {
 				continue
 			}
-			if errors.Is(err, io.EOF) {
-				return
-			}
-			//otherwise assume real error / conn closed.
 			s.connErr = err
 			s.Close()
 			return
