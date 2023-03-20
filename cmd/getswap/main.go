@@ -9,7 +9,16 @@ import (
 
 	"github.com/ipfs/go-cid"
 	"github.com/libp2p/go-libp2p"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/p2p/muxer/mplex"
+	"github.com/libp2p/go-libp2p/p2p/muxer/yamux"
+	"github.com/libp2p/go-libp2p/p2p/security/noise"
+	tls "github.com/libp2p/go-libp2p/p2p/security/tls"
+	quic "github.com/libp2p/go-libp2p/p2p/transport/quic"
+	"github.com/libp2p/go-libp2p/p2p/transport/tcp"
+	"github.com/libp2p/go-libp2p/p2p/transport/websocket"
+	webtransport "github.com/libp2p/go-libp2p/p2p/transport/webtransport"
 	"github.com/multiformats/go-multiaddr"
 	"github.com/urfave/cli/v2"
 	bitswap "github.com/willscott/go-selfish-bitswap-client"
@@ -35,6 +44,9 @@ func main() {
 	}
 }
 
+const yamuxID = "/yamux/1.0.0"
+const mplexID = "/mplex/6.7.0"
+
 func Get(c *cli.Context) error {
 	// handle /parse cid
 	if c.Args().Len() == 0 {
@@ -58,7 +70,16 @@ func Get(c *cli.Context) error {
 	}
 
 	// make host
-	host, err := libp2p.New()
+	opts := make([]libp2p.Option, 0)
+	opts = append([]libp2p.Option{libp2p.Identity(nil)}, opts...)
+	opts = append([]libp2p.Option{libp2p.Transport(tcp.NewTCPTransport, tcp.WithMetrics()), libp2p.Transport(websocket.New), libp2p.Transport(quic.NewTransport), libp2p.Transport(webtransport.New)}, opts...)
+	// add security
+	opts = append([]libp2p.Option{libp2p.Security(tls.ID, tls.New), libp2p.Security(noise.ID, noise.New)}, opts...)
+
+	// add muxers
+	opts = append([]libp2p.Option{libp2p.Muxer(yamuxID, yamuxTransport()), libp2p.Muxer(mplexID, mplex.DefaultTransport)}, opts...)
+
+	host, err := libp2p.New(opts...)
 	if err != nil {
 		return err
 	}
@@ -74,4 +95,10 @@ func Get(c *cli.Context) error {
 	}
 	_, err = os.Stdout.Write(bytes)
 	return err
+}
+
+func yamuxTransport() network.Multiplexer {
+	tpt := *yamux.DefaultTransport
+	tpt.AcceptBacklog = 512
+	return &tpt
 }
