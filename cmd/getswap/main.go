@@ -1,13 +1,20 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"time"
 
 	"github.com/ipfs/go-cid"
+	"github.com/ipld/go-car/v2"
+	"github.com/ipld/go-ipld-prime/datamodel"
+	"github.com/ipld/go-ipld-prime/linking"
+	cidlink "github.com/ipld/go-ipld-prime/linking/cid"
+	selectorparse "github.com/ipld/go-ipld-prime/traversal/selector/parse"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -18,7 +25,6 @@ import (
 	quic "github.com/libp2p/go-libp2p/p2p/transport/quic"
 	"github.com/libp2p/go-libp2p/p2p/transport/tcp"
 	"github.com/libp2p/go-libp2p/p2p/transport/websocket"
-	webtransport "github.com/libp2p/go-libp2p/p2p/transport/webtransport"
 	"github.com/multiformats/go-multiaddr"
 	"github.com/urfave/cli/v2"
 	bitswap "github.com/willscott/go-selfish-bitswap-client"
@@ -72,7 +78,7 @@ func Get(c *cli.Context) error {
 	// make host
 	opts := make([]libp2p.Option, 0)
 	opts = append([]libp2p.Option{libp2p.Identity(nil)}, opts...)
-	opts = append([]libp2p.Option{libp2p.Transport(tcp.NewTCPTransport, tcp.WithMetrics()), libp2p.Transport(websocket.New), libp2p.Transport(quic.NewTransport), libp2p.Transport(webtransport.New)}, opts...)
+	opts = append([]libp2p.Option{libp2p.Transport(tcp.NewTCPTransport, tcp.WithMetrics()), libp2p.Transport(quic.NewTransport), libp2p.Transport(websocket.New)}, opts...)
 	// add security
 	opts = append([]libp2p.Option{libp2p.Security(tls.ID, tls.New), libp2p.Security(noise.ID, noise.New)}, opts...)
 
@@ -86,14 +92,19 @@ func Get(c *cli.Context) error {
 	host.Peerstore().AddAddr(ai.ID, ai.Addrs[0], time.Hour)
 
 	s := bitswap.New(host, ai.ID, bitswap.Options{})
-	fmt.Printf("starting get...\n")
-	bytes, err := s.Get(context.Background(), cidParsed)
 
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s", err)
-		os.Exit(1)
+	// traverse the dag into a car.
+	ls := cidlink.DefaultLinkSystem()
+	ls.StorageReadOpener = func(ctx linking.LinkContext, l datamodel.Link) (io.Reader, error) {
+		c := l.(cidlink.Link).Cid
+		blk, err := s.Get(ctx.Ctx, c)
+		if err != nil {
+			return nil, err
+		}
+		r := bytes.NewBuffer(blk)
+		return r, nil
 	}
-	_, err = os.Stdout.Write(bytes)
+	_, err = car.TraverseV1(context.Background(), &ls, cidParsed, selectorparse.CommonSelector_ExploreAllRecursively, os.Stdout)
 	return err
 }
 
