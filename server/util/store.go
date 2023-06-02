@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	"github.com/multiformats/go-multicodec"
 	bitswapserver "github.com/willscott/go-selfish-bitswap-client/server"
@@ -27,10 +28,10 @@ func (s *store) Has(ctx context.Context, c cid.Cid) (bool, error) {
 	return false, nil
 }
 
-func (s *store) Get(ctx context.Context, c cid.Cid) ([]byte, error) {
+func (s *store) Get(ctx context.Context, c cid.Cid) (blocks.Block, error) {
 	blk, ok := s.db[c]
 	if ok {
-		return blk, nil
+		return blocks.NewBlockWithCid(blk, c)
 	}
 	return nil, ErrNotHave
 }

@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	"github.com/ipfs/go-log/v2"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -33,7 +34,7 @@ var logger = log.Logger("bitswap-server")
 
 type Blockstore interface {
 	Has(ctx context.Context, c cid.Cid) (bool, error)
-	Get(ctx context.Context, c cid.Cid) ([]byte, error)
+	Get(ctx context.Context, c cid.Cid) (blocks.Block, error)
 }
 
 func AttachBitswapServer(h host.Host, bs Blockstore) error {
@@ -132,8 +133,8 @@ func (h *handler) onMessage(ss *streamSender, buf []byte) error {
 				if err != nil {
 					return err
 				}
-				resp.Blocks = append(resp.Blocks, data)
-				filled += len(data)
+				resp.Blocks = append(resp.Blocks, data.RawData())
+				filled += len(data.RawData())
 			} else {
 				resp.BlockPresences = append(resp.BlockPresences, bitswap_message_pb.Message_BlockPresence{
 					Cid:  e.Block,
