@@ -1,6 +1,7 @@
 package bitswapserver
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -31,8 +32,8 @@ var (
 var logger = log.Logger("bitswap-server")
 
 type Blockstore interface {
-	Has(c cid.Cid) (bool, error)
-	Get(c cid.Cid) ([]byte, error)
+	Has(ctx context.Context, c cid.Cid) (bool, error)
+	Get(ctx context.Context, c cid.Cid) ([]byte, error)
 }
 
 func AttachBitswapServer(h host.Host, bs Blockstore) error {
@@ -122,10 +123,12 @@ func (h *handler) onMessage(ss *streamSender, buf []byte) error {
 	resp := bitswap_message_pb.Message{}
 	resp.Wantlist = bitswap_message_pb.Message_Wantlist{}
 	filled := 0
+	timed, cncl := context.WithTimeout(context.Background(), time.Second)
+	defer cncl()
 	for _, e := range m.Wantlist.Entries {
-		if has, err := h.bs.Has(e.Block.Cid); err == nil && has {
+		if has, err := h.bs.Has(timed, e.Block.Cid); err == nil && has {
 			if filled < MaxSendMsgSize {
-				data, err := h.bs.Get(e.Block.Cid)
+				data, err := h.bs.Get(timed, e.Block.Cid)
 				if err != nil {
 					return err
 				}

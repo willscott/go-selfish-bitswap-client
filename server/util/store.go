@@ -1,6 +1,7 @@
 package util
 
 import (
+	"context"
 	"errors"
 
 	"github.com/ipfs/go-cid"
@@ -18,7 +19,7 @@ type store struct {
 	db map[cid.Cid][]byte
 }
 
-func (s *store) Has(c cid.Cid) (bool, error) {
+func (s *store) Has(ctx context.Context, c cid.Cid) (bool, error) {
 	_, ok := s.db[c]
 	if ok {
 		return true, nil
@@ -26,7 +27,7 @@ func (s *store) Has(c cid.Cid) (bool, error) {
 	return false, nil
 }
 
-func (s *store) Get(c cid.Cid) ([]byte, error) {
+func (s *store) Get(ctx context.Context, c cid.Cid) ([]byte, error) {
 	blk, ok := s.db[c]
 	if ok {
 		return blk, nil
